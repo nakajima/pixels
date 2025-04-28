@@ -50,7 +50,7 @@ impl<'req, 'dev, 'win, W: wgpu::WindowHandle + 'win> PixelsBuilder<'req, 'dev, '
         Self {
             request_adapter_options: None,
             device_descriptor: None,
-            backend: wgpu::util::backend_bits_from_env().unwrap_or_else(wgpu::Backends::all),
+            backend: wgpu::Backends::all(),
             width,
             height,
             _pixel_aspect_ratio: 1.0,
@@ -241,7 +241,7 @@ impl<'req, 'dev, 'win, W: wgpu::WindowHandle + 'win> PixelsBuilder<'req, 'dev, '
     ///
     /// Returns an error when a [`wgpu::Adapter`] cannot be found.
     async fn build_impl(self) -> Result<Pixels<'win>, Error> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: self.backend,
             ..Default::default()
         });
@@ -251,15 +251,14 @@ impl<'req, 'dev, 'win, W: wgpu::WindowHandle + 'win> PixelsBuilder<'req, 'dev, '
         let compatible_surface = Some(&surface);
         let request_adapter_options = &self.request_adapter_options;
         let adapter = match wgpu::util::initialize_adapter_from_env(&instance, compatible_surface) {
-            Some(adapter) => Some(adapter),
-            None => {
+            Ok(adapter) => Ok(adapter),
+            Err(_) => {
                 instance
                     .request_adapter(&request_adapter_options.as_ref().map_or_else(
                         || wgpu::RequestAdapterOptions {
                             compatible_surface,
                             force_fallback_adapter: false,
-                            power_preference:
-                                wgpu::util::power_preference_from_env().unwrap_or_default(),
+                            power_preference: wgpu::PowerPreference::default(),
                         },
                         |rao| wgpu::RequestAdapterOptions {
                             compatible_surface: rao.compatible_surface.or(compatible_surface),
@@ -271,7 +270,7 @@ impl<'req, 'dev, 'win, W: wgpu::WindowHandle + 'win> PixelsBuilder<'req, 'dev, '
             }
         };
 
-        let adapter = adapter.ok_or(Error::AdapterNotFound)?;
+        let adapter = adapter.map_err(|_| Error::AdapterNotFound)?;
 
         let device_descriptor = self
             .device_descriptor
@@ -280,7 +279,7 @@ impl<'req, 'dev, 'win, W: wgpu::WindowHandle + 'win> PixelsBuilder<'req, 'dev, '
                 ..wgpu::DeviceDescriptor::default()
             });
 
-        let (device, queue) = adapter.request_device(&device_descriptor, None).await?;
+        let (device, queue) = adapter.request_device(&device_descriptor).await?;
 
         let surface_capabilities = surface.get_capabilities(&adapter);
         let present_mode = self.present_mode;
@@ -486,148 +485,95 @@ const fn texture_format_size(texture_format: wgpu::TextureFormat) -> f32 {
     // TODO: Use constant arithmetic when supported.
     // See: https://github.com/rust-lang/rust/issues/57241
     match texture_format {
-        // Note that these sizes are typically estimates. For instance, GPU vendors decide whether
-        // their implementation uses 5 or 8 bytes per texel for formats like `Depth32PlusStencil8`.
-        // In cases where it is unclear, we choose to overestimate.
-        //
-        // See:
-        // - https://gpuweb.github.io/gpuweb/#plain-color-formats
-        // - https://gpuweb.github.io/gpuweb/#depth-formats
-        // - https://gpuweb.github.io/gpuweb/#packed-formats
-
-        // 8-bit formats, 8 bits per component
         R8Unorm
-        | R8Snorm
-        | R8Uint
-        | R8Sint
-        | Stencil8 => 1.0, // 8.0 / 8.0
-
-        // 16-bit formats, 8 bits per component
+            | R8Snorm
+            | R8Uint
+            | R8Sint
+            | Stencil8 => 1.0,
         R16Uint
-        | R16Sint
-        | R16Float
-        | R16Unorm
-        | R16Snorm
-        | Rg8Unorm
-        | Rg8Snorm
-        | Rg8Uint
-        | Rg8Sint
-        | Rgb9e5Ufloat
-        | Depth16Unorm => 2.0, // 16.0 / 8.0
-
-        // 32-bit formats, 8 bits per component
-        R32Uint
-        | R32Sint
-        | R32Float
-        | Rg16Uint
-        | Rg16Sint
-        | Rg16Float
-        | Rg16Unorm
-        | Rg16Snorm
-        | Rgba8Unorm
-        | Rgba8UnormSrgb
-        | Rgba8Snorm
-        | Rgba8Uint
-        | Rgba8Sint
-        | Bgra8Unorm
-        | Bgra8UnormSrgb
-        | Rgb10a2Uint
-        | Rgb10a2Unorm
-        | Rg11b10Float
-        | Depth32Float
-        | Depth24Plus
-        | Depth24PlusStencil8 => 4.0, // 32.0 / 8.0
-
-        // 64-bit formats, 8 bits per component
+            | R16Sint
+            | R16Float
+            | R16Unorm
+            | R16Snorm
+            | Rg8Unorm
+            | Rg8Snorm
+            | Rg8Uint
+            | Rg8Sint
+            | Rgb9e5Ufloat
+            | Depth16Unorm => 2.0,
         Rg32Uint
-        | Rg32Sint
-        | Rg32Float
-        | Rgba16Uint
-        | Rgba16Sint
-        | Rgba16Float
-        | Rgba16Unorm
-        | Rgba16Snorm
-        | Depth32FloatStencil8 => 8.0, // 64.0 / 8.0
-
-        // 128-bit formats, 8 bits per component
+            | Rg32Sint
+            | Rg32Float
+            | Rgba16Uint
+            | Rgba16Sint
+            | Rgba16Float
+            | Rgba16Unorm
+            | Rgba16Snorm
+            | Depth32FloatStencil8 => 8.0,
         Rgba32Uint
-        | Rgba32Sint
-        | Rgba32Float => 16.0, // 128.0 / 8.0
-
-        // Compressed formats
-
-        // 4x4 blocks, 8 bytes per block
+            | Rgba32Sint
+            | Rgba32Float => 16.0,
         Bc1RgbaUnorm
-        | Bc1RgbaUnormSrgb
-        | Bc4RUnorm
-        | Bc4RSnorm
-        | Etc2Rgb8Unorm
-        | Etc2Rgb8UnormSrgb
-        | Etc2Rgb8A1Unorm
-        | Etc2Rgb8A1UnormSrgb
-        | EacR11Unorm
-        | EacR11Snorm => 0.5, // 4.0 * 4.0 / 8.0
-
-        // 4x4 blocks, 16 bytes per block
+            | Bc1RgbaUnormSrgb
+            | Bc4RUnorm
+            | Bc4RSnorm
+            | Etc2Rgb8Unorm
+            | Etc2Rgb8UnormSrgb
+            | Etc2Rgb8A1Unorm
+            | Etc2Rgb8A1UnormSrgb
+            | EacR11Unorm
+            | EacR11Snorm => 0.5,
         Bc2RgbaUnorm
-        | Bc2RgbaUnormSrgb
-        | Bc3RgbaUnorm
-        | Bc3RgbaUnormSrgb
-        | Bc5RgUnorm
-        | Bc5RgSnorm
-        | Bc6hRgbUfloat
-        | Bc6hRgbFloat
-        | Bc7RgbaUnorm
-        | Bc7RgbaUnormSrgb
-        | EacRg11Unorm
-        | EacRg11Snorm
-        | Etc2Rgba8Unorm
-        | Etc2Rgba8UnormSrgb
-        | Astc { block: B4x4, channel: _ } => 1.0, // 4.0 * 4.0 / 16.0
+            | Bc2RgbaUnormSrgb
+            | Bc3RgbaUnorm
+            | Bc3RgbaUnormSrgb
+            | Bc5RgUnorm
+            | Bc5RgSnorm
+            | Bc6hRgbUfloat
+            | Bc6hRgbFloat
+            | Bc7RgbaUnorm
+            | Bc7RgbaUnormSrgb
+            | EacRg11Unorm
+            | EacRg11Snorm
+            | Etc2Rgba8Unorm
+            | Etc2Rgba8UnormSrgb
+            | Astc { block: B4x4, channel: _ } => 1.0,
+        Astc { block: B5x4, channel: _ } => 1.25,
+        Astc { block: B5x5, channel: _ } => 1.5625,
+        Astc { block: B6x5, channel: _ } => 1.875,
+        Astc { block: B6x6, channel: _ } => 2.25,
+        Astc { block: B8x5, channel: _ } => 2.5,
+        Astc { block: B8x6, channel: _ } => 3.0,
+        Astc { block: B8x8, channel: _ } => 4.0,
+        Astc { block: B10x5, channel: _ } => 3.125,
+        Astc { block: B10x6, channel: _ } => 3.75,
+        Astc { block: B10x8, channel: _ } => 5.0,
+        Astc { block: B10x10, channel: _ } => 6.25,
+        Astc { block: B12x10, channel: _ } => 7.5,
+        Astc { block: B12x12, channel: _ } => 9.0,
+        NV12 => 1.5,
 
-        // 5x4 blocks, 16 bytes per block
-        Astc { block: B5x4, channel: _ } => 1.25, // 5.0 * 4.0 / 16.0
-
-        // 5x5 blocks, 16 bytes per block
-        Astc { block: B5x5, channel: _ } => 1.5625, // 5.0 * 5.0 / 16.0
-
-        // 6x5 blocks, 16 bytes per block
-        Astc { block: B6x5, channel: _ } => 1.875, // 6.0 * 5.0 / 16.0
-
-        // 6x6 blocks, 16 bytes per block
-        Astc { block: B6x6, channel: _ } => 2.25, // 6.0 * 6.0 / 16.0
-
-        // 8x5 blocks, 16 bytes per block
-        Astc { block: B8x5, channel: _ } => 2.5, // 8.0 * 5.0 / 16.0
-
-        // 8x6 blocks, 16 bytes per block
-        Astc { block: B8x6, channel: _ } => 3.0, // 8.0 * 6.0 / 16.0
-
-        // 8x8 blocks, 16 bytes per block
-        Astc { block: B8x8, channel: _ } => 4.0, // 8.0 * 8.0 / 16.0
-
-        // 10x5 blocks, 16 bytes per block
-        Astc { block: B10x5, channel: _ } => 3.125, // 10.0 * 5.0 / 16.0
-
-        // 10x6 blocks, 16 bytes per block
-        Astc { block: B10x6, channel: _ } => 3.75, // 10.0 * 6.0 / 16.0
-
-        // 10x8 blocks, 16 bytes per block
-        Astc { block: B10x8, channel: _ } => 5.0, // 10.0 * 8.0 / 16.0
-
-        // 10x10 blocks, 16 bytes per block
-        Astc { block: B10x10, channel: _ } => 6.25, // 10.0 * 10.0 / 16.0
-
-        // 12x10 blocks, 16 bytes per block
-        Astc { block: B12x10, channel: _ } => 7.5, // 12.0 * 10.0 / 16.0
-
-        // 12x12 blocks, 16 bytes per block
-        Astc { block: B12x12, channel: _ } => 9.0, // 12.0 * 12.0 / 16.0
-
-        // 8-bit two-plane 4:2:0 YUV
-        // The first plane consists of 8-bit G components.
-        // The second plane consists of 16-bit BR components.
-        // The resolution of the second plane is halved both vertically and horizontally.
-        NV12 => 1.5, // (8.0 + 16.0 / 2.0 / 2.0) / 8.0
+        R32Uint |
+        R32Sint |
+        R32Float |
+        Rg16Uint |
+        Rg16Sint |
+        Rg16Unorm |
+        Rg16Snorm |
+        Rg16Float |
+        Rgba8Unorm |
+        Rgba8UnormSrgb |
+        Rgba8Snorm |
+        Rgba8Uint |
+        Rgba8Sint |
+        Bgra8Unorm |
+        Bgra8UnormSrgb |
+        Rgb10a2Uint |
+        Rgb10a2Unorm |
+        Rg11b10Ufloat |
+        R64Uint |
+        Depth24Plus |
+        Depth24PlusStencil8 |
+        Depth32Float => 4.0
     }
 }
